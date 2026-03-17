@@ -400,18 +400,17 @@ export async function startVRMode() {
             `
         });
         vrFilterMesh = new THREE.Mesh(filterGeo, filterMat);
-        vrFilterMesh.position.z = -0.1; // Direkt vor die Kameralinse
+        vrFilterMesh.position.z = -0.2; // FIX: Weiter weg von der Linse (verhindert Clipping durch near-plane)
+        vrFilterMesh.frustumCulled = false; // FIX: Engine darf den Filter niemals wegrechnen
         vrFilterMesh.renderOrder = 9999;
         camera.add(vrFilterMesh);
-        window.app.mainScene.add(camera);
 
-        // 4. AUTO-AVATAR & Perspektive setzen
+        // 4. AUTO-AVATAR, Perspektive & Test-Möbel setzen
         let avatarObj = null;
         window.app.mainScene.traverse((child) => {
             if (child.userData && child.userData.isAvatar) avatarObj = child;
         });
         
-        // Wenn kein Avatar da ist, spawnen wir ihn automatisch im Hintergrund
         if (!avatarObj && window.app.addFurniture) {
             await window.app.addFurniture('avatar_procedural');
             window.app.mainScene.traverse((child) => {
@@ -419,16 +418,37 @@ export async function startVRMode() {
             });
         }
 
-        // Kamera tief fixieren (0.6) und Avatar unsichtbar machen!
-        let startPos = new THREE.Vector3(0, 0.6, 0); 
+        // --- FIX: TEST-MÖBEL SPAWNEN ---
+        if (window.app.addFurniture) {
+            // Hinweis: Falls deine Test-Möbel exakt 'chair_test' oder 'table_test' in der ASSETS-Datenbank heißen, 
+            // tausche hier die Strings 'chair' und 'table_square' entsprechend aus.
+            await window.app.addFurniture('chair');
+            const chairObj = window.app.getMovableObjects().slice(-1)[0];
+            if (chairObj) chairObj.position.set(avatarObj ? avatarObj.position.x + 1 : 1, 0, avatarObj ? avatarObj.position.z - 1.5 : -1.5);
+
+            await window.app.addFurniture('table_square');
+            const tableObj = window.app.getMovableObjects().slice(-1)[0];
+            if (tableObj) tableObj.position.set(avatarObj ? avatarObj.position.x : 0, 0, avatarObj ? avatarObj.position.z - 2 : -2);
+        }
+        // --------------------------------
+
+        // FIX: VR-Kamera-Rig (Behebt das "3 Meter groß"-Problem)
+        if (!window.app.vrCameraRig) {
+            window.app.vrCameraRig = new THREE.Group();
+            window.app.mainScene.add(window.app.vrCameraRig);
+        }
+        window.app.vrCameraRig.add(camera); // Kamera hängt nun am Rig
+
         if (avatarObj) {
             if (avatarObj.userData && avatarObj.userData.visualRef) {
                 avatarObj.userData.visualRef.visible = false;
             }
-            startPos.copy(avatarObj.position);
-            startPos.y += 0.6; 
+            // Wir schieben das Rig auf den Boden. Das Headset addiert dann 1,60m (oder was der Nutzer misst) dazu!
+            window.app.vrCameraRig.position.set(avatarObj.position.x, 0, avatarObj.position.z);
+        } else {
+            window.app.vrCameraRig.position.set(0, 0, 0);
         }
-        camera.position.copy(startPos);
+        camera.position.set(0, 0, 0); // Lokale Kamera-Position im Rig ist 0
 
         // STRIKTE KONTROLLE: Zoomen und Wischen komplett deaktivieren!
         if (window.app.mainControls) {
@@ -458,12 +478,13 @@ export async function startVRMode() {
         controller1 = renderer.xr.getController(0);
         controller1.addEventListener('selectstart', onSelectStart);
         controller1.addEventListener('selectend', onSelectEnd);
-        window.app.mainScene.add(controller1);
+        // FIX: Controller müssen an das VR Rig gehängt werden, damit sie mit dem Avatar mitwandern!
+        if (window.app.vrCameraRig) window.app.vrCameraRig.add(controller1);
 
         controller2 = renderer.xr.getController(1);
         controller2.addEventListener('selectstart', onSelectStart);
         controller2.addEventListener('selectend', onSelectEnd);
-        window.app.mainScene.add(controller2);
+        if (window.app.vrCameraRig) window.app.vrCameraRig.add(controller2);
 
         const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -5)]);
         const lineMat = new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.5 });
@@ -570,15 +591,21 @@ export function stopVRMode() {
     if (controller1) {
         controller1.removeEventListener('selectstart', onSelectStart);
         controller1.removeEventListener('selectend', onSelectEnd);
-        window.app.mainScene.remove(controller1);
+        if (controller1.parent) controller1.parent.remove(controller1);
         controller1 = null;
     }
     if (controller2) {
         controller2.removeEventListener('selectstart', onSelectStart);
         controller2.removeEventListener('selectend', onSelectEnd);
-        window.app.mainScene.remove(controller2);
+        if (controller2.parent) controller2.parent.remove(controller2);
         controller2 = null;
     }
+    
+    // FIX: Kamera zurück in die Hauptszene setzen, da sie im VR-Rig hing
+    if (window.app.mainScene && camera) {
+        window.app.mainScene.add(camera);
+    }
+    
     grabbedObject = null;
     grabbingController = null;
 
