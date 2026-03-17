@@ -63,6 +63,13 @@ let selectedRoot = null;
 let selectionBox = null; 
 let historyStack = []; 
 
+// Expose für VR Interaktion
+window.app.getInteractionMeshes = function() { return interactionMeshes; };
+window.app.getMovableObjects = function() { return movableObjects; };
+window.app.getCurrentRoomLimits = function() { return currentRoomLimits; };
+window.app.getDragPlane = function() { return dragPlane; };
+window.app.triggerSaveHistory = function() { saveHistory(); };
+
 // Vision / Simulation Status
 let isVisionAnalysisMode = false;   
 let visionConeMesh = null;

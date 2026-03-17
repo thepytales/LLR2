@@ -6,8 +6,16 @@ let vrControls = null;
 let isActive = false;
 let savedCameraState = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
 
-// NEU: WebGL Visor für Cardboard-Filter (da CSS in WebXR ignoriert wird)
+// WebGL Visor für Filter
 let vrFilterMesh = null;
+
+// VR Controller Setup für Meta Quest
+let controller1, controller2;
+let raycasterVR = new THREE.Raycaster();
+let grabbedObject = null;
+let grabbingController = null;
+let dragOffsetVR = new THREE.Vector3();
+const tempMatrix = new THREE.Matrix4();
 
 function showVRLoader(show, text = 'Lade 3D-Assets...') {
     let loader = document.getElementById('vr-local-loader');
@@ -68,21 +76,23 @@ async function enterFullscreenAndLandscape() {
     } catch (err) { console.warn("Fullscreen/Orientation restricted.", err); }
 }
 
-// Exklusive Shader-Steuerung nur fuer VR
-function applyVRShader(filterStr, severity) {
+// Exklusive Shader-Steuerung nur fuer VR (Global erreichbar für das UI)
+window.app.applyVRWebGLFilter = function(filterStr, severityStr, severityLevel) {
     if (!vrFilterMesh || !vrFilterMesh.material.uniforms || !window.app.mainScene) return;
+
+    const severity = parseFloat(severityLevel || severityStr || 2.0);
 
     // Reset Filter
     vrFilterMesh.material.uniforms.opacity.value = 0.0;
     vrFilterMesh.material.uniforms.mode.value = 0; 
-    vrFilterMesh.material.uniforms.severity.value = parseFloat(severity);
+    vrFilterMesh.material.uniforms.severity.value = severity;
     if (window.app.mainScene.fog) window.app.mainScene.fog.density = 0;
 
-    if (filterStr === 'none') return;
+    if (filterStr === 'none' || filterStr === 'normal') return;
 
     // Simulationen mathematisch berechnen
-    if (filterStr === 'sim-blur') window.app.mainScene.fog.density = 0.05 + (severity * 0.02);
-    if (filterStr === 'sim-blind') {
+    if (filterStr === 'sim-blur' || filterStr === 'low') window.app.mainScene.fog.density = 0.05 + (severity * 0.02);
+    if (filterStr === 'sim-blind' || filterStr === 'blind') {
         vrFilterMesh.material.uniforms.mode.value = 6;
         vrFilterMesh.material.uniforms.opacity.value = 0.98;
     }
@@ -103,7 +113,7 @@ function applyVRShader(filterStr, severity) {
         vrFilterMesh.material.uniforms.mode.value = 4;
         vrFilterMesh.material.uniforms.opacity.value = 0.5 + (severity * 0.1);
     }
-}
+};
 
 // Baut das neue, freistehende Menue am unteren Bildschirmrand
 function buildVRMenu() {
@@ -162,7 +172,7 @@ function buildVRMenu() {
 
         slider.addEventListener('input', (e) => {
             valLabel.innerText = 'Wert: ' + e.target.value;
-            applyVRShader(currentActiveFilter, e.target.value);
+            window.app.applyVRWebGLFilter(currentActiveFilter, e.target.value, e.target.value);
         });
 
         const btns = container.querySelectorAll('.custom-vr-filter-btn');
@@ -173,7 +183,7 @@ function buildVRMenu() {
                 e.target.style.color = 'white';
                 
                 currentActiveFilter = e.target.dataset.filter;
-                applyVRShader(currentActiveFilter, slider.value);
+                window.app.applyVRWebGLFilter(currentActiveFilter, slider.value, slider.value);
             });
         });
         
@@ -242,6 +252,49 @@ function injectMissingFilterButtons() {
     addBtn('sim-glaucoma', 'Grüner Star');
     addBtn('sim-blind', 'Blindheit');
 }
+
+// --- VR CONTROLLER LOGIK ---
+function getIntersections(controller) {
+    tempMatrix.identity().extractRotation(controller.matrixWorld);
+    raycasterVR.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycasterVR.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+    
+    if (window.app.getInteractionMeshes) {
+        return raycasterVR.intersectObjects(window.app.getInteractionMeshes(), false);
+    }
+    return [];
+}
+
+function onSelectStart(event) {
+    const controller = event.target;
+    const intersections = getIntersections(controller);
+    if (intersections.length > 0) {
+        const object = intersections[0].object;
+        if (object.userData && object.userData.root) {
+            const root = object.userData.root;
+            if (root.userData.isLocked) return;
+            
+            if (window.app.triggerSaveHistory) window.app.triggerSaveHistory();
+            
+            grabbedObject = root;
+            grabbingController = controller;
+            
+            if (window.app.getDragPlane) {
+                const planeIntersect = new THREE.Vector3();
+                raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect);
+                dragOffsetVR.copy(planeIntersect);
+            }
+        }
+    }
+}
+
+function onSelectEnd(event) {
+    if (grabbingController === event.target) {
+        grabbedObject = null;
+        grabbingController = null;
+    }
+}
+// ---------------------------
 
 export async function startVRMode() {
     try {
@@ -401,11 +454,57 @@ export async function startVRMode() {
         initOverlayListeners();
         buildVRMenu();
 
+        // 6b. Controller registrieren (Meta Quest)
+        controller1 = renderer.xr.getController(0);
+        controller1.addEventListener('selectstart', onSelectStart);
+        controller1.addEventListener('selectend', onSelectEnd);
+        window.app.mainScene.add(controller1);
+
+        controller2 = renderer.xr.getController(1);
+        controller2.addEventListener('selectstart', onSelectStart);
+        controller2.addEventListener('selectend', onSelectEnd);
+        window.app.mainScene.add(controller2);
+
+        const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -5)]);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.5 });
+        controller1.add(new THREE.Line(lineGeo, lineMat));
+        controller2.add(new THREE.Line(lineGeo, lineMat));
+
         // 7. Render-Loop starten
         const renderVR = () => {
             if (vrControls && !renderer.xr.isPresenting) {
                 vrControls.update();
             }
+            
+            // Controller Drag & Drop Update
+            if (grabbedObject && grabbingController && window.app.getDragPlane) {
+                tempMatrix.identity().extractRotation(grabbingController.matrixWorld);
+                raycasterVR.ray.origin.setFromMatrixPosition(grabbingController.matrixWorld);
+                raycasterVR.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+                
+                const planeIntersect = new THREE.Vector3();
+                if (raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect)) {
+                    const delta = new THREE.Vector3().copy(planeIntersect).sub(dragOffsetVR);
+                    
+                    let newX = grabbedObject.position.x + delta.x;
+                    let newZ = grabbedObject.position.z + delta.z;
+                    
+                    const isWall = grabbedObject.userData.isWallItem;
+                    const padding = isWall ? 0.05 : 0.5;
+
+                    if (window.app.getCurrentRoomLimits && !grabbedObject.userData.isZone) {
+                        const limits = window.app.getCurrentRoomLimits();
+                        const limitX = limits.x - padding;
+                        const limitZ = limits.z - padding;
+                        newX = Math.max(-limitX, Math.min(limitX, newX));
+                        newZ = Math.max(-limitZ, Math.min(limitZ, newZ));
+                    }
+                    
+                    grabbedObject.position.set(newX, grabbedObject.position.y, newZ);
+                    dragOffsetVR.copy(planeIntersect);
+                }
+            }
+
             renderer.render(window.app.mainScene, camera);
         };
 
@@ -467,6 +566,21 @@ export function stopVRMode() {
         vrControls.dispose();
         vrControls = null;
     }
+
+    if (controller1) {
+        controller1.removeEventListener('selectstart', onSelectStart);
+        controller1.removeEventListener('selectend', onSelectEnd);
+        window.app.mainScene.remove(controller1);
+        controller1 = null;
+    }
+    if (controller2) {
+        controller2.removeEventListener('selectstart', onSelectStart);
+        controller2.removeEventListener('selectend', onSelectEnd);
+        window.app.mainScene.remove(controller2);
+        controller2 = null;
+    }
+    grabbedObject = null;
+    grabbingController = null;
 
     // Visor entfernen
     if (vrFilterMesh) {
