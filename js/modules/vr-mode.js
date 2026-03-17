@@ -420,15 +420,17 @@ export async function startVRMode() {
 
         // --- FIX: TEST-MÖBEL SPAWNEN ---
         if (window.app.addFurniture) {
-            // Hinweis: Falls deine Test-Möbel exakt 'chair_test' oder 'table_test' in der ASSETS-Datenbank heißen, 
-            // tausche hier die Strings 'chair' und 'table_square' entsprechend aus.
-            await window.app.addFurniture('chair');
-            const chairObj = window.app.getMovableObjects().slice(-1)[0];
-            if (chairObj) chairObj.position.set(avatarObj ? avatarObj.position.x + 1 : 1, 0, avatarObj ? avatarObj.position.z - 1.5 : -1.5);
+            try {
+                await window.app.addFurniture('chair_test.glb');
+                const chairObj = window.app.getMovableObjects().slice(-1)[0];
+                if (chairObj) chairObj.position.set(avatarObj ? avatarObj.position.x + 1 : 1, 0, avatarObj ? avatarObj.position.z - 1.5 : -1.5);
 
-            await window.app.addFurniture('table_square');
-            const tableObj = window.app.getMovableObjects().slice(-1)[0];
-            if (tableObj) tableObj.position.set(avatarObj ? avatarObj.position.x : 0, 0, avatarObj ? avatarObj.position.z - 2 : -2);
+                await window.app.addFurniture('table_test.glb');
+                const tableObj = window.app.getMovableObjects().slice(-1)[0];
+                if (tableObj) tableObj.position.set(avatarObj ? avatarObj.position.x : 0, 0, avatarObj ? avatarObj.position.z - 2 : -2);
+            } catch(e) {
+                console.warn("Die Test-Möbel (chair_test.glb, table_test.glb) müssen in data.js unter ASSETS.furniture registriert sein!", e);
+            }
         }
         // --------------------------------
 
@@ -506,6 +508,9 @@ export async function startVRMode() {
                 const planeIntersect = new THREE.Vector3();
                 if (raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect)) {
                     const delta = new THREE.Vector3().copy(planeIntersect).sub(dragOffsetVR);
+                    
+                    // FIX: Sensibilität um 15% reduzieren (Faktor 0.85) für präziseres Greifen
+                    delta.multiplyScalar(0.85);
                     
                     let newX = grabbedObject.position.x + delta.x;
                     let newZ = grabbedObject.position.z + delta.z;

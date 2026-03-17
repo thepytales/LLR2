@@ -164,6 +164,8 @@ export const ASSETS = {
     },
   },
   furniture: {
+    'chair_test.glb': { file: 'chair_test.glb', dims: {x: 0.5, z: 0.5}, radius: 0.4, seats: 1, name: "VR Test-Stuhl", acousticBonus: 0.8 },
+    'table_test.glb': { file: 'table_test.glb', dims: {x: 1.0, z: 1.0}, radius: 0.8, seats: 0, name: "VR Test-Tisch", acousticBonus: 2.0 },
     'row_combo': { file: 'Tischplusstuhleinzeln.glb', dims: {x: 0.8, z: 1.2}, radius: 0.8, seats: 1, name: "Tisch+Stuhl", acousticBonus: 2.0 },
     'tano':      { file: 'trapezTisch.glb',           dims: {x: 1.2, z: 0.7}, radius: 0.6, seats: 1, name: "Trapeztisch", acousticBonus: 1.5 },
     'triangle':  { file: 'dreiecksTisch.glb',         dims: {x: 1.0, z: 0.9}, radius: 0.5, seats: 1, name: "Dreieckstisch", acousticBonus: 1.5 },
