@@ -421,11 +421,15 @@ export async function startVRMode() {
         // --- FIX: TEST-MÖBEL SPAWNEN ---
         if (window.app.addFurniture) {
             try {
+                // Stuhl laden und kurz warten (Race Condition vermeiden)
                 await window.app.addFurniture('chair_test.glb');
+                await new Promise(resolve => setTimeout(resolve, 100));
                 const chairObj = window.app.getMovableObjects().slice(-1)[0];
                 if (chairObj) chairObj.position.set(avatarObj ? avatarObj.position.x + 1 : 1, 0, avatarObj ? avatarObj.position.z - 1.5 : -1.5);
 
+                // Tisch laden
                 await window.app.addFurniture('table_test.glb');
+                await new Promise(resolve => setTimeout(resolve, 100));
                 const tableObj = window.app.getMovableObjects().slice(-1)[0];
                 if (tableObj) tableObj.position.set(avatarObj ? avatarObj.position.x : 0, 0, avatarObj ? avatarObj.position.z - 2 : -2);
             } catch(e) {
@@ -509,8 +513,8 @@ export async function startVRMode() {
                 if (raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect)) {
                     const delta = new THREE.Vector3().copy(planeIntersect).sub(dragOffsetVR);
                     
-                    // FIX: Sensibilität um 15% reduzieren (Faktor 0.85) für präziseres Greifen
-                    delta.multiplyScalar(0.85);
+                    // FIX: Sensibilität drastisch reduziert (Faktor 0.05) für präzises Greifen
+                    delta.multiplyScalar(0.05);
                     
                     let newX = grabbedObject.position.x + delta.x;
                     let newZ = grabbedObject.position.z + delta.z;
@@ -528,6 +532,32 @@ export async function startVRMode() {
                     
                     grabbedObject.position.set(newX, grabbedObject.position.y, newZ);
                     dragOffsetVR.copy(planeIntersect);
+                }
+            }
+
+            // NEU: Locomotion / Herumlaufen mit Quest Controllern (Thumbsticks)
+            const session = renderer.xr.getSession();
+            if (session && window.app.vrCameraRig) {
+                for (const source of session.inputSources) {
+                    if (source.gamepad && source.gamepad.axes.length >= 4) {
+                        // Achse 2 & 3 sind typischerweise der Haupt-Thumbstick (X & Y)
+                        const moveX = source.gamepad.axes[2] || 0;
+                        const moveZ = source.gamepad.axes[3] || 0;
+                        
+                        // Deadzone definieren (verhindert Drift)
+                        if (Math.abs(moveX) > 0.1 || Math.abs(moveZ) > 0.1) {
+                            const speed = 0.05;
+                            const camDir = new THREE.Vector3();
+                            camera.getWorldDirection(camDir);
+                            camDir.y = 0; // Kein Fliegen nach oben/unten
+                            camDir.normalize();
+                            
+                            const camRight = new THREE.Vector3().crossVectors(camera.up, camDir).normalize();
+                            
+                            window.app.vrCameraRig.position.addScaledVector(camDir, -moveZ * speed);
+                            window.app.vrCameraRig.position.addScaledVector(camRight, moveX * speed);
+                        }
+                    }
                 }
             }
 
