@@ -513,9 +513,7 @@ export async function startVRMode() {
                 if (raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect)) {
                     const delta = new THREE.Vector3().copy(planeIntersect).sub(dragOffsetVR);
                     
-                    // FIX: Sensibilität drastisch reduziert (Faktor 0.05) für präzises Greifen
-                    delta.multiplyScalar(0.05);
-                    
+                    // FIX: 1:1 Mapping ohne Bremsfaktor. Die Achsen verhalten sich nun logisch synchron zum Laserpointer.
                     let newX = grabbedObject.position.x + delta.x;
                     let newZ = grabbedObject.position.z + delta.z;
                     
@@ -526,6 +524,7 @@ export async function startVRMode() {
                         const limits = window.app.getCurrentRoomLimits();
                         const limitX = limits.x - padding;
                         const limitZ = limits.z - padding;
+                        // Raumgrenzen fangen extreme Sprünge durch flache Raycast-Winkel ab
                         newX = Math.max(-limitX, Math.min(limitX, newX));
                         newZ = Math.max(-limitZ, Math.min(limitZ, newZ));
                     }
@@ -535,27 +534,38 @@ export async function startVRMode() {
                 }
             }
 
-            // NEU: Locomotion / Herumlaufen mit Quest Controllern (Thumbsticks)
+            // NEU: Geteilte Steuerung - Links = Laufen, Rechts = Drehen
             const session = renderer.xr.getSession();
             if (session && window.app.vrCameraRig) {
                 for (const source of session.inputSources) {
                     if (source.gamepad && source.gamepad.axes.length >= 4) {
-                        // Achse 2 & 3 sind typischerweise der Haupt-Thumbstick (X & Y)
-                        const moveX = source.gamepad.axes[2] || 0;
-                        const moveZ = source.gamepad.axes[3] || 0;
+                        const thumbstickX = source.gamepad.axes[2] || 0;
+                        const thumbstickY = source.gamepad.axes[3] || 0;
                         
-                        // Deadzone definieren (verhindert Drift)
-                        if (Math.abs(moveX) > 0.1 || Math.abs(moveZ) > 0.1) {
-                            const speed = 0.05;
-                            const camDir = new THREE.Vector3();
-                            camera.getWorldDirection(camDir);
-                            camDir.y = 0; // Kein Fliegen nach oben/unten
-                            camDir.normalize();
-                            
-                            const camRight = new THREE.Vector3().crossVectors(camera.up, camDir).normalize();
-                            
-                            window.app.vrCameraRig.position.addScaledVector(camDir, -moveZ * speed);
-                            window.app.vrCameraRig.position.addScaledVector(camRight, moveX * speed);
+                        // LINKER CONTROLLER: Bewegen (Translation)
+                        if (source.handedness === 'left') {
+                            if (Math.abs(thumbstickX) > 0.1 || Math.abs(thumbstickY) > 0.1) {
+                                const speed = 0.05;
+                                const camDir = new THREE.Vector3();
+                                camera.getWorldDirection(camDir);
+                                camDir.y = 0; // Kein Fliegen
+                                camDir.normalize();
+                                
+                                const camRight = new THREE.Vector3().crossVectors(camera.up, camDir).normalize();
+                                
+                                // X-Achse invertiert (-thumbstickX), Z-Achse bleibt
+                                window.app.vrCameraRig.position.addScaledVector(camDir, -thumbstickY * speed);
+                                window.app.vrCameraRig.position.addScaledVector(camRight, -thumbstickX * speed);
+                            }
+                        }
+                        
+                        // RECHTER CONTROLLER: Drehen (Rotation um die eigene Achse)
+                        if (source.handedness === 'right') {
+                            if (Math.abs(thumbstickX) > 0.1) {
+                                const rotSpeed = 0.04;
+                                // Negative X-Achse dreht nach links, positiv nach rechts
+                                window.app.vrCameraRig.rotation.y -= thumbstickX * rotSpeed;
+                            }
                         }
                     }
                 }
