@@ -6,8 +6,16 @@ let vrControls = null;
 let isActive = false;
 let savedCameraState = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
 
-// NEU: WebGL Visor für Cardboard-Filter (da CSS in WebXR ignoriert wird)
+// WebGL Visor für Filter
 let vrFilterMesh = null;
+
+// VR Controller Setup für Meta Quest
+let controller1, controller2;
+let raycasterVR = new THREE.Raycaster();
+let grabbedObject = null;
+let grabbingController = null;
+let dragOffsetVR = new THREE.Vector3();
+const tempMatrix = new THREE.Matrix4();
 
 function showVRLoader(show, text = 'Lade 3D-Assets...') {
     let loader = document.getElementById('vr-local-loader');
@@ -68,21 +76,23 @@ async function enterFullscreenAndLandscape() {
     } catch (err) { console.warn("Fullscreen/Orientation restricted.", err); }
 }
 
-// Exklusive Shader-Steuerung nur fuer VR
-function applyVRShader(filterStr, severity) {
+// Exklusive Shader-Steuerung nur fuer VR (Global erreichbar für das UI)
+window.app.applyVRWebGLFilter = function(filterStr, severityStr, severityLevel) {
     if (!vrFilterMesh || !vrFilterMesh.material.uniforms || !window.app.mainScene) return;
+
+    const severity = parseFloat(severityLevel || severityStr || 2.0);
 
     // Reset Filter
     vrFilterMesh.material.uniforms.opacity.value = 0.0;
     vrFilterMesh.material.uniforms.mode.value = 0; 
-    vrFilterMesh.material.uniforms.severity.value = parseFloat(severity);
+    vrFilterMesh.material.uniforms.severity.value = severity;
     if (window.app.mainScene.fog) window.app.mainScene.fog.density = 0;
 
-    if (filterStr === 'none') return;
+    if (filterStr === 'none' || filterStr === 'normal') return;
 
     // Simulationen mathematisch berechnen
-    if (filterStr === 'sim-blur') window.app.mainScene.fog.density = 0.05 + (severity * 0.02);
-    if (filterStr === 'sim-blind') {
+    if (filterStr === 'sim-blur' || filterStr === 'low') window.app.mainScene.fog.density = 0.05 + (severity * 0.02);
+    if (filterStr === 'sim-blind' || filterStr === 'blind') {
         vrFilterMesh.material.uniforms.mode.value = 6;
         vrFilterMesh.material.uniforms.opacity.value = 0.98;
     }
@@ -103,7 +113,7 @@ function applyVRShader(filterStr, severity) {
         vrFilterMesh.material.uniforms.mode.value = 4;
         vrFilterMesh.material.uniforms.opacity.value = 0.5 + (severity * 0.1);
     }
-}
+};
 
 // Baut das neue, freistehende Menue am unteren Bildschirmrand
 function buildVRMenu() {
@@ -162,7 +172,7 @@ function buildVRMenu() {
 
         slider.addEventListener('input', (e) => {
             valLabel.innerText = 'Wert: ' + e.target.value;
-            applyVRShader(currentActiveFilter, e.target.value);
+            window.app.applyVRWebGLFilter(currentActiveFilter, e.target.value, e.target.value);
         });
 
         const btns = container.querySelectorAll('.custom-vr-filter-btn');
@@ -173,7 +183,7 @@ function buildVRMenu() {
                 e.target.style.color = 'white';
                 
                 currentActiveFilter = e.target.dataset.filter;
-                applyVRShader(currentActiveFilter, slider.value);
+                window.app.applyVRWebGLFilter(currentActiveFilter, slider.value, slider.value);
             });
         });
         
@@ -242,6 +252,49 @@ function injectMissingFilterButtons() {
     addBtn('sim-glaucoma', 'Grüner Star');
     addBtn('sim-blind', 'Blindheit');
 }
+
+// --- VR CONTROLLER LOGIK ---
+function getIntersections(controller) {
+    tempMatrix.identity().extractRotation(controller.matrixWorld);
+    raycasterVR.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycasterVR.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+    
+    if (window.app.getInteractionMeshes) {
+        return raycasterVR.intersectObjects(window.app.getInteractionMeshes(), false);
+    }
+    return [];
+}
+
+function onSelectStart(event) {
+    const controller = event.target;
+    const intersections = getIntersections(controller);
+    if (intersections.length > 0) {
+        const object = intersections[0].object;
+        if (object.userData && object.userData.root) {
+            const root = object.userData.root;
+            if (root.userData.isLocked) return;
+            
+            if (window.app.triggerSaveHistory) window.app.triggerSaveHistory();
+            
+            grabbedObject = root;
+            grabbingController = controller;
+            
+            if (window.app.getDragPlane) {
+                const planeIntersect = new THREE.Vector3();
+                raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect);
+                dragOffsetVR.copy(planeIntersect);
+            }
+        }
+    }
+}
+
+function onSelectEnd(event) {
+    if (grabbingController === event.target) {
+        grabbedObject = null;
+        grabbingController = null;
+    }
+}
+// ---------------------------
 
 export async function startVRMode() {
     try {
@@ -347,18 +400,17 @@ export async function startVRMode() {
             `
         });
         vrFilterMesh = new THREE.Mesh(filterGeo, filterMat);
-        vrFilterMesh.position.z = -0.1; // Direkt vor die Kameralinse
+        vrFilterMesh.position.z = -0.2; // FIX: Weiter weg von der Linse (verhindert Clipping durch near-plane)
+        vrFilterMesh.frustumCulled = false; // FIX: Engine darf den Filter niemals wegrechnen
         vrFilterMesh.renderOrder = 9999;
         camera.add(vrFilterMesh);
-        window.app.mainScene.add(camera);
 
-        // 4. AUTO-AVATAR & Perspektive setzen
+        // 4. AUTO-AVATAR, Perspektive & Test-Möbel setzen
         let avatarObj = null;
         window.app.mainScene.traverse((child) => {
             if (child.userData && child.userData.isAvatar) avatarObj = child;
         });
         
-        // Wenn kein Avatar da ist, spawnen wir ihn automatisch im Hintergrund
         if (!avatarObj && window.app.addFurniture) {
             await window.app.addFurniture('avatar_procedural');
             window.app.mainScene.traverse((child) => {
@@ -366,16 +418,43 @@ export async function startVRMode() {
             });
         }
 
-        // Kamera tief fixieren (0.6) und Avatar unsichtbar machen!
-        let startPos = new THREE.Vector3(0, 0.6, 0); 
+        // --- FIX: TEST-MÖBEL SPAWNEN ---
+        if (window.app.addFurniture) {
+            try {
+                // Stuhl laden und kurz warten (Race Condition vermeiden)
+                await window.app.addFurniture('chair_test.glb');
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const chairObj = window.app.getMovableObjects().slice(-1)[0];
+                if (chairObj) chairObj.position.set(avatarObj ? avatarObj.position.x + 1 : 1, 0, avatarObj ? avatarObj.position.z - 1.5 : -1.5);
+
+                // Tisch laden
+                await window.app.addFurniture('table_test.glb');
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const tableObj = window.app.getMovableObjects().slice(-1)[0];
+                if (tableObj) tableObj.position.set(avatarObj ? avatarObj.position.x : 0, 0, avatarObj ? avatarObj.position.z - 2 : -2);
+            } catch(e) {
+                console.warn("Die Test-Möbel (chair_test.glb, table_test.glb) müssen in data.js unter ASSETS.furniture registriert sein!", e);
+            }
+        }
+        // --------------------------------
+
+        // FIX: VR-Kamera-Rig (Behebt das "3 Meter groß"-Problem)
+        if (!window.app.vrCameraRig) {
+            window.app.vrCameraRig = new THREE.Group();
+            window.app.mainScene.add(window.app.vrCameraRig);
+        }
+        window.app.vrCameraRig.add(camera); // Kamera hängt nun am Rig
+
         if (avatarObj) {
             if (avatarObj.userData && avatarObj.userData.visualRef) {
                 avatarObj.userData.visualRef.visible = false;
             }
-            startPos.copy(avatarObj.position);
-            startPos.y += 0.6; 
+            // Wir schieben das Rig auf den Boden. Das Headset addiert dann 1,60m (oder was der Nutzer misst) dazu!
+            window.app.vrCameraRig.position.set(avatarObj.position.x, 0, avatarObj.position.z);
+        } else {
+            window.app.vrCameraRig.position.set(0, 0, 0);
         }
-        camera.position.copy(startPos);
+        camera.position.set(0, 0, 0); // Lokale Kamera-Position im Rig ist 0
 
         // STRIKTE KONTROLLE: Zoomen und Wischen komplett deaktivieren!
         if (window.app.mainControls) {
@@ -401,11 +480,97 @@ export async function startVRMode() {
         initOverlayListeners();
         buildVRMenu();
 
+        // 6b. Controller registrieren (Meta Quest)
+        controller1 = renderer.xr.getController(0);
+        controller1.addEventListener('selectstart', onSelectStart);
+        controller1.addEventListener('selectend', onSelectEnd);
+        // FIX: Controller müssen an das VR Rig gehängt werden, damit sie mit dem Avatar mitwandern!
+        if (window.app.vrCameraRig) window.app.vrCameraRig.add(controller1);
+
+        controller2 = renderer.xr.getController(1);
+        controller2.addEventListener('selectstart', onSelectStart);
+        controller2.addEventListener('selectend', onSelectEnd);
+        if (window.app.vrCameraRig) window.app.vrCameraRig.add(controller2);
+
+        const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -5)]);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.5 });
+        controller1.add(new THREE.Line(lineGeo, lineMat));
+        controller2.add(new THREE.Line(lineGeo, lineMat));
+
         // 7. Render-Loop starten
         const renderVR = () => {
             if (vrControls && !renderer.xr.isPresenting) {
                 vrControls.update();
             }
+            
+            // Controller Drag & Drop Update
+            if (grabbedObject && grabbingController && window.app.getDragPlane) {
+                tempMatrix.identity().extractRotation(grabbingController.matrixWorld);
+                raycasterVR.ray.origin.setFromMatrixPosition(grabbingController.matrixWorld);
+                raycasterVR.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+                
+                const planeIntersect = new THREE.Vector3();
+                if (raycasterVR.ray.intersectPlane(window.app.getDragPlane(), planeIntersect)) {
+                    const delta = new THREE.Vector3().copy(planeIntersect).sub(dragOffsetVR);
+                    
+                    // FIX: 1:1 Mapping ohne Bremsfaktor. Die Achsen verhalten sich nun logisch synchron zum Laserpointer.
+                    let newX = grabbedObject.position.x + delta.x;
+                    let newZ = grabbedObject.position.z + delta.z;
+                    
+                    const isWall = grabbedObject.userData.isWallItem;
+                    const padding = isWall ? 0.05 : 0.5;
+
+                    if (window.app.getCurrentRoomLimits && !grabbedObject.userData.isZone) {
+                        const limits = window.app.getCurrentRoomLimits();
+                        const limitX = limits.x - padding;
+                        const limitZ = limits.z - padding;
+                        // Raumgrenzen fangen extreme Sprünge durch flache Raycast-Winkel ab
+                        newX = Math.max(-limitX, Math.min(limitX, newX));
+                        newZ = Math.max(-limitZ, Math.min(limitZ, newZ));
+                    }
+                    
+                    grabbedObject.position.set(newX, grabbedObject.position.y, newZ);
+                    dragOffsetVR.copy(planeIntersect);
+                }
+            }
+
+            // NEU: Geteilte Steuerung - Links = Laufen, Rechts = Drehen
+            const session = renderer.xr.getSession();
+            if (session && window.app.vrCameraRig) {
+                for (const source of session.inputSources) {
+                    if (source.gamepad && source.gamepad.axes.length >= 4) {
+                        const thumbstickX = source.gamepad.axes[2] || 0;
+                        const thumbstickY = source.gamepad.axes[3] || 0;
+                        
+                        // LINKER CONTROLLER: Bewegen (Translation)
+                        if (source.handedness === 'left') {
+                            if (Math.abs(thumbstickX) > 0.1 || Math.abs(thumbstickY) > 0.1) {
+                                const speed = 0.05;
+                                const camDir = new THREE.Vector3();
+                                camera.getWorldDirection(camDir);
+                                camDir.y = 0; // Kein Fliegen
+                                camDir.normalize();
+                                
+                                const camRight = new THREE.Vector3().crossVectors(camera.up, camDir).normalize();
+                                
+                                // X-Achse invertiert (-thumbstickX), Z-Achse bleibt
+                                window.app.vrCameraRig.position.addScaledVector(camDir, -thumbstickY * speed);
+                                window.app.vrCameraRig.position.addScaledVector(camRight, -thumbstickX * speed);
+                            }
+                        }
+                        
+                        // RECHTER CONTROLLER: Drehen (Rotation um die eigene Achse)
+                        if (source.handedness === 'right') {
+                            if (Math.abs(thumbstickX) > 0.1) {
+                                const rotSpeed = 0.04;
+                                // Negative X-Achse dreht nach links, positiv nach rechts
+                                window.app.vrCameraRig.rotation.y -= thumbstickX * rotSpeed;
+                            }
+                        }
+                    }
+                }
+            }
+
             renderer.render(window.app.mainScene, camera);
         };
 
@@ -467,6 +632,27 @@ export function stopVRMode() {
         vrControls.dispose();
         vrControls = null;
     }
+
+    if (controller1) {
+        controller1.removeEventListener('selectstart', onSelectStart);
+        controller1.removeEventListener('selectend', onSelectEnd);
+        if (controller1.parent) controller1.parent.remove(controller1);
+        controller1 = null;
+    }
+    if (controller2) {
+        controller2.removeEventListener('selectstart', onSelectStart);
+        controller2.removeEventListener('selectend', onSelectEnd);
+        if (controller2.parent) controller2.parent.remove(controller2);
+        controller2 = null;
+    }
+    
+    // FIX: Kamera zurück in die Hauptszene setzen, da sie im VR-Rig hing
+    if (window.app.mainScene && camera) {
+        window.app.mainScene.add(camera);
+    }
+    
+    grabbedObject = null;
+    grabbingController = null;
 
     // Visor entfernen
     if (vrFilterMesh) {
